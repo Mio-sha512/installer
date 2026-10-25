@@ -154,5 +154,5 @@
   "provision.gen4.instructions": "Pour le connecter au serveur, maintenez le bouton de mise sous tension jusqu'à ce que le robot s'éteigne et patientez quelques secondes. Rallumez ensuite le robot et patientez jusqu'à ce qu'il soit complètement allumé.",
 
   "finished.title": "Robot <i>mordu à sang</i> par Vacuula !",
-  "finished.subtitle": "Vous pouvez désormais débrancher le robot de votre ordinateur et l'allumer ! Vous n'avez plus qu'à attendre qu'il soit détecté par votre <a href='http://vacuula.local'>Serveur Vacuula !</a>"
+  "finished.subtitle": "Vous pouvez désormais débrancher le robot de votre ordinateur et l'allumer ! Vous n'avez plus qu'à attendre qu'il soit détecté par votre <a href='http://{url}'>Serveur Vacuula !</a>"
 }

@@ -155,5 +155,5 @@
   "provision.gen4.instructions": "Om verbinding te maken met de server, houd je de aan/uit-knop ingedrukt totdat je robot afsluit. Wacht een paar seconden en start de robot daarna opnieuw op.",
 
   "finished.title": "Robot <i>gebeten</i> door Vacuula",
-  "finished.subtitle": "Je kunt de robot nu loskoppelen van de computer en aanzetten! De robot verschijnt na een aantal seconden in je <a href='http://vacuula.local'>Vacuula-server!</a>"
+  "finished.subtitle": "Je kunt de robot nu loskoppelen van de computer en aanzetten! De robot verschijnt na een aantal seconden in je <a href='http://{url}'>Vacuula-server!</a>"
 }

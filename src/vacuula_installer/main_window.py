@@ -474,6 +474,11 @@ class MainWindow(QMainWindow):
 
     def _goto_finished_screen(self) -> None:
         self._robot_detector.stop()
+        if self._session.server_ip_manual:
+            url = f"{self._session.server_ip}:{self._session.vacuula_port}"
+        else:
+            url = f"vacuula.local:{self._session.vacuula_port}"
+        self._finished_screen.set_vacuula_url(url)
         self._crossfade_to(self._finished_screen)
 
     def _on_firmware(self, valid: bool, msg: str) -> None:
