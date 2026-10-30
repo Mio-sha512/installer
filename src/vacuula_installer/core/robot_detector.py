@@ -243,15 +243,41 @@ class RobotDetector(QObject):
             for port in serial.tools.list_ports.comports()
             if port.vid == dev.idVendor and port.pid == dev.idProduct  # ty: ignore[unresolved-attribute]
         ]
+        candidates = vid_pid_matches
         if target_serial:
-            for port in vid_pid_matches:
-                if port.serial_number == target_serial:
+            serial_matches = [p for p in vid_pid_matches if p.serial_number == target_serial]
+            if len(serial_matches) == 1:
+                return serial_matches[0].device
+            if serial_matches:
+                candidates = serial_matches
+        # Composite-gadget robots (patched devu DLL) expose two CDC-ACM
+        # ports with identical vid/pid/serial. Only the first function
+        # serves the command CLI, so probe each candidate for a
+        # GetVersion response and pick the one that answers.
+        if len(candidates) > 1:
+            for port in candidates:
+                if RobotDetector._port_answers(port.device):
                     return port.device
+            return None
         # Fall back to a bare vid/pid match - only safe when exactly one
         # candidate port is present (e.g. serial number unreadable).
-        if len(vid_pid_matches) == 1:
-            return vid_pid_matches[0].device
+        if len(candidates) == 1:
+            return candidates[0].device
         return None
+
+    @staticmethod
+    def _port_answers(port_name: str) -> bool:
+        """True if the port responds to a GetVersion command."""
+        try:
+            with serial.Serial(port_name, baudrate=SERIAL_BAUDRATE, timeout=SERIAL_TIMEOUT_S) as ser:
+                ser.reset_input_buffer()
+                ser.write(GET_VERSION_CMD)
+                ser.flush()
+                # The CLI answers with a CSV table ("Component,Major,...").
+                # A shell on the second channel echoes/errors instead.
+                return b"Component" in ser.read(4096)
+        except (serial.SerialException, OSError):
+            return False
 
     # TODO: uart stuff should be move to separate thing for just that!!
     @staticmethod

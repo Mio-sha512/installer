@@ -17,6 +17,15 @@ TMP_UPLOADER=/tmp/libNeatoUploader.so.1
 BMU=/usr/lib/libNeatoBMU.so
 MODDED_BMU=${FOLDER}/libNeatoBMU.so
 TMP_BMU=/tmp/libNeatoBMU.so
+
+USBSER=/proc/boot/devu-usbser-am335x-musbmhdrc.so
+MODDED_USBSER=${FOLDER}/devu-usbser-am335x-musbmhdrc.so
+TMP_USBSER=/tmp/devu-usbser-am335x-musbmhdrc.so
+
+OTG=/bin/otg
+MODDED_OTG=${FOLDER}/otg
+TMP_OTG=/tmp/otg
+
 PORT_PATCH_DIR=/emmc/vacuula/port_patch
 GEN3_PORT="$(sed -n '2p' /emmc/vacuula/config)"
 
@@ -59,10 +68,17 @@ case "${NEATO_VERSION}" in
         MOVW_R2_OFFSET=173600                   # 0x2A620: movw r2,#443 (checkNucleo)
         MOVW_R1_OFFSET=177712                   # 0x2B630: movw r1,#443 (checkNucleo)
         LIB_MOVW_OFFSETS="21984 23016"          # 0x55E0 0x59E8: movw r2,#443 in libNeatoUploader
+        # BMU patch offsets
         BMU_AUTH_OFFSET=15064                   # 0x3AD8: bl auth_check in NeatoBMU::authenticate()
         BMU_MFG_OFFSETS="9232 9728"             # 0x2410 0x2600: zero mfg_access (+0x54) in read_bmu / read_data_block1
         BMU_SRW_OFFSET1=7348                    # 0x1CB4: retry counter init in smbus_read_word
         BMU_SRW_OFFSET2=7412                    # 0x1CF4: retry loop tail in smbus_read_word
+        # USB patch offsets
+        USB_PHDR_OFFSET=148                     # 0x94: PT_NOTE -> PT_LOAD for composite descriptor blob
+        USB_CLS_OFFSET=27756                    # 0x6C6C: bDeviceClass 02/02/00 -> ef/02/01 (IAD composite)
+        USB_PTRS_OFFSET=28104                   # 0x6DC8: FS/HS/SS config descriptor pointers
+        USB_DESC_OFFSET=30948                   # 0x78E4: composite 2x CDC-ACM FS/HS/SS config descriptor blobs
+        OTG_IFACE_OFFSET=11836                  # 0x2E3C: devc-serusb_dcd "iface_list=0" -> "iface_list=0:2"
         ;;
     4.6.0-72)
         # Replace nucleo path (446440 == 0x6CFE8)
@@ -114,6 +130,48 @@ start_bmu () {
     fi
 }
 
+# Composite USB gadget: patched devu DLL shadows /proc/boot via LD_LIBRARY_PATH;
+# patched otg spawns devc-serusb_dcd iface_list=0:2 -> serusb1 (CLI) + serusb2 (shell).
+# Non-blocking so start_mod timing for astro_mod / cron / PowerDaemon is untouched.
+start_usb2 () {
+    if [ -f ${MODDED_USBSER} ] && [ -f ${MODDED_OTG} ]; then
+        if [ ! -f /tmp/.usb2_done ]; then
+            touch /tmp/.usb2_done || true
+            cp ${MODDED_USBSER} ${TMP_USBSER} >/dev/null 2>&1 || true
+            cp ${MODDED_OTG} ${TMP_OTG} >/dev/null 2>&1 || true
+            chmod +x ${TMP_OTG} >/dev/null 2>&1 || true
+            (
+                slay -f otg >/dev/null 2>&1 || true
+                slay -f devc-serusb_dcd >/dev/null 2>&1 || true
+                i=0
+                while [ -e /dev/serusb1 ] && [ $i -lt 30 ]; do
+                    sleep 0.1
+                    i=$((i + 1))
+                done
+                slay -f io-usb-dcd >/dev/null 2>&1 || true
+                while [ -e /dev/io-usb-dcd/io-usb ] && [ $i -lt 60 ]; do
+                    sleep 0.1
+                    i=$((i + 1))
+                done
+                ${TMP_OTG} -s 1.0 >/dev/null 2>&1 </dev/null &
+            ) >/dev/null 2>&1 </dev/null &
+            log "Scheduled composite USB otg swap"
+        fi
+        if [ ! -f /tmp/.usb2_sh ]; then
+            touch /tmp/.usb2_sh || true
+            (
+                while :; do
+                    if [ -e /dev/serusb2 ]; then
+                        ksh -i </dev/serusb2 >/dev/serusb2 2>&1 || true
+                    fi
+                    sleep 2
+                done
+            ) >/dev/null 2>&1 </dev/null &
+            log "Started /dev/serusb2 ksh watcher"
+        fi
+    fi
+}
+
 watchdog () {
     original_pid=$(pidin -f aN | awk '$NF ~ /astro$/ { print $1 }')
     modded_pid=$(pidin -f aN | awk '$NF ~ /astro_mod$/ { print $1 }')
@@ -136,6 +194,7 @@ watchdog () {
         log "Started modded astro with PID ${modded_pid}"
     fi
 
+    start_usb2
     start_bmu
 }
 
@@ -247,6 +306,42 @@ patch_bmu () {
     rm -f /tmp/vacuula_chk
 }
 
+# Patch devu-usbser-am335x-musbmhdrc.so and /bin/otg to expose a second CDC-ACM
+# USB serial interface (/dev/serusb2) for a root ksh shell alongside the stock
+# command CLI on /dev/serusb1.
+patch_usb () {
+    if [ -z "${USB_PHDR_OFFSET:-}" ]; then
+        log "No USB patch for ${NEATO_VERSION}, skipping"
+        return 0
+    fi
+
+    log "Patching USB peripheral gadget and otg for dual CDC-ACM"
+    cp ${USBSER} ${MODDED_USBSER}
+    cp ${OTG} ${MODDED_OTG}
+
+    check_bytes ${MODDED_USBSER} ${USB_PHDR_OFFSET} ${PORT_PATCH_DIR}/o_usb_phdr || patch_fail "usb phdr"
+    check_bytes ${MODDED_USBSER} ${USB_CLS_OFFSET} ${PORT_PATCH_DIR}/o_usb_cls || patch_fail "usb cls"
+    check_bytes ${MODDED_USBSER} ${USB_PTRS_OFFSET} ${PORT_PATCH_DIR}/o_usb_ptrs || patch_fail "usb ptrs"
+    check_bytes ${MODDED_USBSER} ${USB_DESC_OFFSET} ${PORT_PATCH_DIR}/o_usb_desc || patch_fail "usb desc"
+    check_bytes ${MODDED_OTG} ${OTG_IFACE_OFFSET} ${PORT_PATCH_DIR}/o_otg_if || patch_fail "otg iface"
+
+    patch_at ${PORT_PATCH_DIR}/p_usb_phdr ${MODDED_USBSER} ${USB_PHDR_OFFSET}
+    patch_at ${PORT_PATCH_DIR}/p_usb_cls ${MODDED_USBSER} ${USB_CLS_OFFSET}
+    patch_at ${PORT_PATCH_DIR}/p_usb_ptrs ${MODDED_USBSER} ${USB_PTRS_OFFSET}
+    patch_at ${PORT_PATCH_DIR}/p_usb_desc ${MODDED_USBSER} ${USB_DESC_OFFSET}
+    patch_at ${PORT_PATCH_DIR}/p_otg_if ${MODDED_OTG} ${OTG_IFACE_OFFSET}
+    chmod +x ${MODDED_OTG}
+
+    check_bytes ${MODDED_USBSER} ${USB_PHDR_OFFSET} ${PORT_PATCH_DIR}/p_usb_phdr || patch_fail "usb phdr verify"
+    check_bytes ${MODDED_USBSER} ${USB_CLS_OFFSET} ${PORT_PATCH_DIR}/p_usb_cls || patch_fail "usb cls verify"
+    check_bytes ${MODDED_USBSER} ${USB_PTRS_OFFSET} ${PORT_PATCH_DIR}/p_usb_ptrs || patch_fail "usb ptrs verify"
+    check_bytes ${MODDED_USBSER} ${USB_DESC_OFFSET} ${PORT_PATCH_DIR}/p_usb_desc || patch_fail "usb desc verify"
+    check_bytes ${MODDED_OTG} ${OTG_IFACE_OFFSET} ${PORT_PATCH_DIR}/p_otg_if || patch_fail "otg iface verify"
+
+    log "USB patch done: $(openssl sha1 ${MODDED_USBSER} ${MODDED_OTG})"
+    rm -f /tmp/vacuula_chk
+}
+
 make_mod () {
     log "Making modded astro binary at ${MODDED_ASTRO}"
     log "Copying original astro from ${ASTRO}"
@@ -281,6 +376,9 @@ make_mod () {
     # non-oem batteries patch
     patch_bmu
 
+    # composite USB dual-serial patch
+    patch_usb
+
     # TODO: verification of all mods!
 
     log "Modded astro binary created successfully"
@@ -304,6 +402,7 @@ start_mod () {
     # initially, our cron has to run!
     crontab -r || true
     crontab /emmc/vacuula/vacuula.cron || true
+    start_usb2
     start_bmu
 }
 
